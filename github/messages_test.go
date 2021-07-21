@@ -12,9 +12,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestMessageMAC_BadHashTypePrefix(t *testing.T) {
@@ -29,12 +30,13 @@ func TestValidatePayload(t *testing.T) {
 	const defaultSignature = "sha1=126f2c800419c60137ce748d7672e77b65cf16d6"
 	secretKey := []byte("0123456789abcdef")
 	tests := []struct {
-		signature   string
-		eventID     string
-		event       string
-		wantEventID string
-		wantEvent   string
-		wantPayload string
+		signature       string
+		signatureHeader string
+		eventID         string
+		event           string
+		wantEventID     string
+		wantEvent       string
+		wantPayload     string
 	}{
 		// The following tests generate expected errors:
 		{},                         // Missing signature
@@ -63,6 +65,13 @@ func TestValidatePayload(t *testing.T) {
 			wantPayload: defaultBody,
 		},
 		{
+			signature:       "sha256=b1f8020f5b4cd42042f807dd939015c4a418bc1ff7f604dd55b0a19b5d953d9b",
+			signatureHeader: SHA256SignatureHeader,
+			event:           "ping",
+			wantEvent:       "ping",
+			wantPayload:     defaultBody,
+		},
+		{
 			signature:   "sha512=8456767023c1195682e182a23b3f5d19150ecea598fde8cb85918f7281b16079471b1329f92b912c4d8bd7455cb159777db8f29608b20c7c87323ba65ae62e1f",
 			event:       "ping",
 			wantEvent:   "ping",
@@ -77,7 +86,11 @@ func TestValidatePayload(t *testing.T) {
 			t.Fatalf("NewRequest: %v", err)
 		}
 		if test.signature != "" {
-			req.Header.Set(signatureHeader, test.signature)
+			if test.signatureHeader != "" {
+				req.Header.Set(test.signatureHeader, test.signature)
+			} else {
+				req.Header.Set(SHA1SignatureHeader, test.signature)
+			}
 		}
 		req.Header.Set("Content-Type", "application/json")
 
@@ -107,7 +120,7 @@ func TestValidatePayload_FormGet(t *testing.T) {
 	}
 	req.PostForm = form
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set(signatureHeader, signature)
+	req.Header.Set(SHA1SignatureHeader, signature)
 
 	got, err := ValidatePayload(req, secretKey)
 	if err != nil {
@@ -118,7 +131,7 @@ func TestValidatePayload_FormGet(t *testing.T) {
 	}
 
 	// check that if payload is invalid we get error
-	req.Header.Set(signatureHeader, "invalid signature")
+	req.Header.Set(SHA1SignatureHeader, "invalid signature")
 	if _, err = ValidatePayload(req, []byte{0}); err == nil {
 		t.Error("ValidatePayload = nil, want err")
 	}
@@ -137,7 +150,7 @@ func TestValidatePayload_FormPost(t *testing.T) {
 		t.Fatalf("NewRequest: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set(signatureHeader, signature)
+	req.Header.Set(SHA1SignatureHeader, signature)
 
 	got, err := ValidatePayload(req, secretKey)
 	if err != nil {
@@ -148,7 +161,7 @@ func TestValidatePayload_FormPost(t *testing.T) {
 	}
 
 	// check that if payload is invalid we get error
-	req.Header.Set(signatureHeader, "invalid signature")
+	req.Header.Set(SHA1SignatureHeader, "invalid signature")
 	if _, err = ValidatePayload(req, []byte{0}); err == nil {
 		t.Error("ValidatePayload = nil, want err")
 	}
@@ -213,6 +226,33 @@ func TestValidatePayload_BadRequestBody(t *testing.T) {
 				t.Fatal("ValidatePayload returned nil; want error")
 			}
 		})
+	}
+}
+
+func TestValidatePayload_InvalidContentTypeParams(t *testing.T) {
+	req, err := http.NewRequest("POST", "http://localhost/event", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json; charset=")
+	if _, err = ValidatePayload(req, nil); err == nil {
+		t.Error("ValidatePayload = nil, want err")
+	}
+}
+
+func TestValidatePayload_ValidContentTypeParams(t *testing.T) {
+	var requestBody = `{"yo":true}`
+	buf := bytes.NewBufferString(requestBody)
+
+	req, err := http.NewRequest("POST", "http://localhost/event", buf)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+
+	_, err = ValidatePayload(req, nil)
+	if err != nil {
+		t.Error("ValidatePayload = nil, want err")
 	}
 }
 
@@ -359,6 +399,10 @@ func TestParseWebHook(t *testing.T) {
 			messageType: "pull_request_review_comment",
 		},
 		{
+			payload:     &PullRequestTargetEvent{},
+			messageType: "pull_request_target",
+		},
+		{
 			payload:     &PushEvent{},
 			messageType: "push",
 		},
@@ -421,7 +465,7 @@ func TestParseWebHook(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseWebHook: %v", err)
 		}
-		if want := test.payload; !reflect.DeepEqual(got, want) {
+		if want := test.payload; !cmp.Equal(got, want) {
 			t.Errorf("ParseWebHook(%#v, %#v) = %#v, want %#v", test.messageType, p, got, want)
 		}
 	}
@@ -430,6 +474,18 @@ func TestParseWebHook(t *testing.T) {
 func TestParseWebHook_BadMessageType(t *testing.T) {
 	if _, err := ParseWebHook("bogus message type", []byte("{}")); err == nil {
 		t.Fatal("ParseWebHook returned nil; wanted error")
+	}
+}
+
+func TestValidatePayloadFromBody_UnableToParseBody(t *testing.T) {
+	if _, err := ValidatePayloadFromBody("application/x-www-form-urlencoded", bytes.NewReader([]byte(`%`)), "sha1=", []byte{}); err == nil {
+		t.Errorf("ValidatePayloadFromBody returned nil; wanted error")
+	}
+}
+
+func TestValidatePayloadFromBody_UnsupportedContentType(t *testing.T) {
+	if _, err := ValidatePayloadFromBody("invalid", bytes.NewReader([]byte(`{}`)), "sha1=", []byte{}); err == nil {
+		t.Errorf("ValidatePayloadFromBody returned nil; wanted error")
 	}
 }
 
@@ -450,7 +506,7 @@ func TestDeliveryID(t *testing.T) {
 func TestWebHookType(t *testing.T) {
 	want := "yo"
 	req := &http.Request{
-		Header: http.Header{eventTypeHeader: []string{want}},
+		Header: http.Header{EventTypeHeader: []string{want}},
 	}
 	if got := WebHookType(req); got != want {
 		t.Errorf("WebHookType = %q, want %q", got, want)

@@ -55,38 +55,39 @@ var (
 	// skipMethods holds methods which are skipped because they do not have GitHub v3
 	// API URLs or are otherwise problematic in parsing, discovering, and/or fixing.
 	skipMethods = map[string]bool{
-		"ActionsService.DownloadArtifact":            true,
-		"AdminService.CreateOrg":                     true,
-		"AdminService.CreateUser":                    true,
-		"AdminService.CreateUserImpersonation":       true,
-		"AdminService.DeleteUserImpersonation":       true,
-		"AdminService.GetAdminStats":                 true,
-		"AdminService.RenameOrg":                     true,
-		"AdminService.RenameOrgByName":               true,
-		"AdminService.UpdateTeamLDAPMapping":         true,
-		"AdminService.UpdateUserLDAPMapping":         true,
-		"AppsService.FindRepositoryInstallationByID": true,
-		"AuthorizationsService.CreateImpersonation":  true,
-		"AuthorizationsService.DeleteImpersonation":  true,
-		"IssueImportService.CheckStatus":             true,
-		"IssueImportService.CheckStatusSince":        true,
-		"IssueImportService.Create":                  true,
-		"MarketplaceService.marketplaceURI":          true,
-		"OrganizationsService.GetByID":               true,
-		"RepositoriesService.DeletePreReceiveHook":   true,
-		"RepositoriesService.DownloadContents":       true,
-		"RepositoriesService.GetArchiveLink":         true,
-		"RepositoriesService.GetByID":                true,
-		"RepositoriesService.GetPreReceiveHook":      true,
-		"RepositoriesService.ListPreReceiveHooks":    true,
-		"RepositoriesService.UpdatePreReceiveHook":   true,
-		"SearchService.search":                       true,
-		"TeamsService.ListTeamMembersByID":           true,
-		"UsersService.DemoteSiteAdmin":               true,
-		"UsersService.GetByID":                       true,
-		"UsersService.PromoteSiteAdmin":              true,
-		"UsersService.Suspend":                       true,
-		"UsersService.Unsuspend":                     true,
+		"ActionsService.DownloadArtifact":              true,
+		"AdminService.CreateOrg":                       true,
+		"AdminService.CreateUser":                      true,
+		"AdminService.CreateUserImpersonation":         true,
+		"AdminService.DeleteUserImpersonation":         true,
+		"AdminService.GetAdminStats":                   true,
+		"AdminService.RenameOrg":                       true,
+		"AdminService.RenameOrgByName":                 true,
+		"AdminService.UpdateTeamLDAPMapping":           true,
+		"AdminService.UpdateUserLDAPMapping":           true,
+		"AppsService.FindRepositoryInstallationByID":   true,
+		"AuthorizationsService.CreateImpersonation":    true,
+		"AuthorizationsService.DeleteImpersonation":    true,
+		"IssueImportService.CheckStatus":               true,
+		"IssueImportService.CheckStatusSince":          true,
+		"IssueImportService.Create":                    true,
+		"MarketplaceService.marketplaceURI":            true,
+		"OrganizationsService.GetByID":                 true,
+		"RepositoriesService.DeletePreReceiveHook":     true,
+		"RepositoriesService.DownloadContents":         true,
+		"RepositoriesService.DownloadContentsWithMeta": true,
+		"RepositoriesService.GetArchiveLink":           true,
+		"RepositoriesService.GetByID":                  true,
+		"RepositoriesService.GetPreReceiveHook":        true,
+		"RepositoriesService.ListPreReceiveHooks":      true,
+		"RepositoriesService.UpdatePreReceiveHook":     true,
+		"SearchService.search":                         true,
+		"TeamsService.ListTeamMembersByID":             true,
+		"UsersService.DemoteSiteAdmin":                 true,
+		"UsersService.GetByID":                         true,
+		"UsersService.PromoteSiteAdmin":                true,
+		"UsersService.Suspend":                         true,
+		"UsersService.Unsuspend":                       true,
 	}
 
 	helperOverrides = map[string]overrideFunc{
@@ -654,12 +655,12 @@ func (e *Endpoint) String() string {
 	return b.String()
 }
 
-func (ep *Endpoint) checkHttpMethodOverride(path string) {
-	lookupOverride := fmt.Sprintf("%v.%v: %v %v", ep.serviceName, ep.endpointName, ep.httpMethod, path)
+func (e *Endpoint) checkHttpMethodOverride(path string) {
+	lookupOverride := fmt.Sprintf("%v.%v: %v %v", e.serviceName, e.endpointName, e.httpMethod, path)
 	logf("Looking up override for %q", lookupOverride)
 	if v, ok := methodOverrides[lookupOverride]; ok {
 		logf("overriding method for %v to %q", lookupOverride, v)
-		ep.httpMethod = v
+		e.httpMethod = v
 		return
 	}
 }

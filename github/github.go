@@ -132,6 +132,8 @@ const (
 	mediaTypeContentAttachmentsPreview = "application/vnd.github.corsair-preview+json"
 )
 
+var errNonNilContext = errors.New("context must be non-nil")
+
 // A Client manages communication with the GitHub API.
 type Client struct {
 	clientMu sync.Mutex   // clientMu protects the client during calls that modify the CheckRedirect func.
@@ -159,6 +161,7 @@ type Client struct {
 	Admin          *AdminService
 	Apps           *AppsService
 	Authorizations *AuthorizationsService
+	Billing        *BillingService
 	Checks         *ChecksService
 	CodeScanning   *CodeScanningService
 	Enterprise     *EnterpriseService
@@ -185,6 +188,14 @@ type service struct {
 	client *Client
 }
 
+// Client returns the http.Client used by this GitHub client.
+func (c *Client) Client() *http.Client {
+	c.clientMu.Lock()
+	defer c.clientMu.Unlock()
+	clientCopy := *c.client
+	return &clientCopy
+}
+
 // ListOptions specifies the optional parameters to various List methods that
 // support offset pagination.
 type ListOptions struct {
@@ -203,6 +214,15 @@ type ListCursorOptions struct {
 
 	// For paginated result sets, the number of results to include per page.
 	PerPage int `url:"per_page,omitempty"`
+
+	// A cursor, as given in the Link header. If specified, the query only searches for events after this cursor.
+	After string `url:"after,omitempty"`
+
+	// A cursor, as given in the Link header. If specified, the query only searches for events before this cursor.
+	Before string `url:"before,omitempty"`
+
+	// A cursor, as given in the Link header. If specified, the query continues the search using this cursor.
+	Cursor string `url:"cursor,omitempty"`
 }
 
 // UploadOptions specifies the parameters to methods that support uploads.
@@ -268,6 +288,7 @@ func NewClient(httpClient *http.Client) *Client {
 	c.Admin = (*AdminService)(&c.common)
 	c.Apps = (*AppsService)(&c.common)
 	c.Authorizations = (*AuthorizationsService)(&c.common)
+	c.Billing = (*BillingService)(&c.common)
 	c.Checks = (*ChecksService)(&c.common)
 	c.CodeScanning = (*CodeScanningService)(&c.common)
 	c.Enterprise = (*EnterpriseService)(&c.common)
@@ -435,6 +456,11 @@ type Response struct {
 	// calling the endpoint again.
 	NextPageToken string
 
+	// For APIs that support cursor pagination, such as RepositoryService.ListRepositoryHookDeliveries,
+	// the following field will be populated to point to the next page.
+	// Set ListCursorOptions.Cursor to this value when calling the endpoint again.
+	Cursor string
+
 	// Explicitly specify the Rate type so Rate's String() receiver doesn't
 	// propagate to Response.
 	Rate Rate
@@ -471,7 +497,21 @@ func (r *Response) populatePageValues() {
 			if err != nil {
 				continue
 			}
-			page := url.Query().Get("page")
+
+			q := url.Query()
+
+			if cursor := q.Get("cursor"); cursor != "" {
+				for _, segment := range segments[1:] {
+					switch strings.TrimSpace(segment) {
+					case `rel="next"`:
+						r.Cursor = cursor
+					}
+				}
+
+				continue
+			}
+
+			page := q.Get("page")
 			if page == "" {
 				continue
 			}
@@ -489,7 +529,6 @@ func (r *Response) populatePageValues() {
 				case `rel="last"`:
 					r.LastPage, _ = strconv.Atoi(page)
 				}
-
 			}
 		}
 	}
@@ -512,6 +551,12 @@ func parseRate(r *http.Response) Rate {
 	return rate
 }
 
+type requestContext uint8
+
+const (
+	bypassRateLimitCheck requestContext = iota
+)
+
 // BareDo sends an API request and lets you handle the api response. If an error
 // or API Error occurs, the error will contain more information. Otherwise you
 // are supposed to read and close the response's Body. If rate limit is exceeded
@@ -522,18 +567,20 @@ func parseRate(r *http.Response) Rate {
 // canceled or times out, ctx.Err() will be returned.
 func (c *Client) BareDo(ctx context.Context, req *http.Request) (*Response, error) {
 	if ctx == nil {
-		return nil, errors.New("context must be non-nil")
+		return nil, errNonNilContext
 	}
 	req = withContext(ctx, req)
 
 	rateLimitCategory := category(req.URL.Path)
 
-	// If we've hit rate limit, don't make further requests before Reset time.
-	if err := c.checkRateLimitBeforeDo(req, rateLimitCategory); err != nil {
-		return &Response{
-			Response: err.Response,
-			Rate:     err.Rate,
-		}, err
+	if bypass := ctx.Value(bypassRateLimitCheck); bypass == nil {
+		// If we've hit rate limit, don't make further requests before Reset time.
+		if err := c.checkRateLimitBeforeDo(req, rateLimitCategory); err != nil {
+			return &Response{
+				Response: err.Response,
+				Rate:     err.Rate,
+			}, err
+		}
 	}
 
 	resp, err := c.client.Do(req)
@@ -645,6 +692,20 @@ func (c *Client) checkRateLimitBeforeDo(req *http.Request, rateLimitCategory rat
 	return nil
 }
 
+// compareHttpResponse returns whether two http.Response objects are equal or not.
+// Currently, only StatusCode is checked. This function is used when implementing the
+// Is(error) bool interface for the custom error types in this package.
+func compareHttpResponse(r1, r2 *http.Response) bool {
+	if r1 == nil && r2 == nil {
+		return true
+	}
+
+	if r1 != nil && r2 != nil {
+		return r1.StatusCode == r2.StatusCode
+	}
+	return false
+}
+
 /*
 An ErrorResponse reports one or more errors caused by an API request.
 
@@ -655,22 +716,69 @@ type ErrorResponse struct {
 	Message  string         `json:"message"` // error message
 	Errors   []Error        `json:"errors"`  // more detail on individual errors
 	// Block is only populated on certain types of errors such as code 451.
-	// See https://developer.github.com/changes/2016-03-17-the-451-status-code-is-now-supported/
-	// for more information.
-	Block *struct {
-		Reason    string     `json:"reason,omitempty"`
-		CreatedAt *Timestamp `json:"created_at,omitempty"`
-	} `json:"block,omitempty"`
+	Block *ErrorBlock `json:"block,omitempty"`
 	// Most errors will also include a documentation_url field pointing
 	// to some content that might help you resolve the error, see
 	// https://docs.github.com/en/free-pro-team@latest/rest/reference/#client-errors
 	DocumentationURL string `json:"documentation_url,omitempty"`
 }
 
+// ErrorBlock contains a further explanation for the reason of an error.
+// See https://developer.github.com/changes/2016-03-17-the-451-status-code-is-now-supported/
+// for more information.
+type ErrorBlock struct {
+	Reason    string     `json:"reason,omitempty"`
+	CreatedAt *Timestamp `json:"created_at,omitempty"`
+}
+
 func (r *ErrorResponse) Error() string {
 	return fmt.Sprintf("%v %v: %d %v %+v",
 		r.Response.Request.Method, sanitizeURL(r.Response.Request.URL),
 		r.Response.StatusCode, r.Message, r.Errors)
+}
+
+// Is returns whether the provided error equals this error.
+func (r *ErrorResponse) Is(target error) bool {
+	v, ok := target.(*ErrorResponse)
+	if !ok {
+		return false
+	}
+
+	if r.Message != v.Message || (r.DocumentationURL != v.DocumentationURL) ||
+		!compareHttpResponse(r.Response, v.Response) {
+		return false
+	}
+
+	// Compare Errors.
+	if len(r.Errors) != len(v.Errors) {
+		return false
+	}
+	for idx := range r.Errors {
+		if r.Errors[idx] != v.Errors[idx] {
+			return false
+		}
+	}
+
+	// Compare Block.
+	if (r.Block != nil && v.Block == nil) || (r.Block == nil && v.Block != nil) {
+		return false
+	}
+	if r.Block != nil && v.Block != nil {
+		if r.Block.Reason != v.Block.Reason {
+			return false
+		}
+		if (r.Block.CreatedAt != nil && v.Block.CreatedAt == nil) || (r.Block.CreatedAt ==
+			nil && v.Block.CreatedAt != nil) {
+			return false
+		}
+		if r.Block.CreatedAt != nil && v.Block.CreatedAt != nil {
+			if *(r.Block.CreatedAt) != *(v.Block.CreatedAt) {
+				return false
+			}
+		}
+	}
+
+	return true
 }
 
 // TwoFactorAuthError occurs when using HTTP Basic Authentication for a user
@@ -694,6 +802,18 @@ func (r *RateLimitError) Error() string {
 		r.Response.StatusCode, r.Message, formatRateReset(time.Until(r.Rate.Reset.Time)))
 }
 
+// Is returns whether the provided error equals this error.
+func (r *RateLimitError) Is(target error) bool {
+	v, ok := target.(*RateLimitError)
+	if !ok {
+		return false
+	}
+
+	return r.Rate == v.Rate &&
+		r.Message == v.Message &&
+		compareHttpResponse(r.Response, v.Response)
+}
+
 // AcceptedError occurs when GitHub returns 202 Accepted response with an
 // empty body, which means a job was scheduled on the GitHub side to process
 // the information needed and cache it.
@@ -707,6 +827,15 @@ type AcceptedError struct {
 
 func (*AcceptedError) Error() string {
 	return "job scheduled on GitHub side; try again later"
+}
+
+// Is returns whether the provided error equals this error.
+func (ae *AcceptedError) Is(target error) bool {
+	v, ok := target.(*AcceptedError)
+	if !ok {
+		return false
+	}
+	return bytes.Compare(ae.Raw, v.Raw) == 0
 }
 
 // AbuseRateLimitError occurs when GitHub returns 403 Forbidden response with the
@@ -725,6 +854,18 @@ func (r *AbuseRateLimitError) Error() string {
 	return fmt.Sprintf("%v %v: %d %v",
 		r.Response.Request.Method, sanitizeURL(r.Response.Request.URL),
 		r.Response.StatusCode, r.Message)
+}
+
+// Is returns whether the provided error equals this error.
+func (r *AbuseRateLimitError) Is(target error) bool {
+	v, ok := target.(*AbuseRateLimitError)
+	if !ok {
+		return false
+	}
+
+	return r.Message == v.Message &&
+		r.RetryAfter == v.RetryAfter &&
+		compareHttpResponse(r.Response, v.Response)
 }
 
 // sanitizeURL redacts the client_secret parameter from the URL which may be
@@ -921,6 +1062,9 @@ func (c *Client) RateLimits(ctx context.Context) (*RateLimits, *Response, error)
 	response := new(struct {
 		Resources *RateLimits `json:"resources"`
 	})
+
+	// This resource is not subject to rate limits.
+	ctx = context.WithValue(ctx, bypassRateLimitCheck, true)
 	resp, err := c.Do(ctx, req, response)
 	if err != nil {
 		return nil, resp, err

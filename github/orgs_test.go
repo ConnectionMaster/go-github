@@ -10,11 +10,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"reflect"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
-func TestOrganization_marshal(t *testing.T) {
+func TestOrganization_Marshal(t *testing.T) {
 	testJSONMarshal(t, &Organization{}, "{}")
 
 	o := &Organization{
@@ -35,6 +36,9 @@ func TestOrganization_marshal(t *testing.T) {
 		MembersCanCreatePrivateRepos:         Bool(true),
 		MembersCanCreatePublicRepos:          Bool(false),
 		MembersAllowedRepositoryCreationType: String("all"),
+		MembersCanCreatePages:                Bool(true),
+		MembersCanCreatePublicPages:          Bool(false),
+		MembersCanCreatePrivatePages:         Bool(true),
 	}
 	want := `
 		{
@@ -54,7 +58,10 @@ func TestOrganization_marshal(t *testing.T) {
 			"members_can_create_public_repositories": false,
 			"members_can_create_private_repositories": true,
 			"members_can_create_internal_repositories": true,
-			"members_allowed_repository_creation_type": "all"
+			"members_allowed_repository_creation_type": "all",
+			"members_can_create_pages": true,
+			"members_can_create_public_pages": false,
+			"members_can_create_private_pages": true
 		}
 	`
 	testJSONMarshal(t, o, want)
@@ -79,7 +86,7 @@ func TestOrganizationsService_ListAll(t *testing.T) {
 	}
 
 	want := []*Organization{{ID: Int64(4314092)}}
-	if !reflect.DeepEqual(orgs, want) {
+	if !cmp.Equal(orgs, want) {
 		t.Errorf("Organizations.ListAll returned %+v, want %+v", orgs, want)
 	}
 
@@ -109,7 +116,7 @@ func TestOrganizationsService_List_authenticatedUser(t *testing.T) {
 	}
 
 	want := []*Organization{{ID: Int64(1)}, {ID: Int64(2)}}
-	if !reflect.DeepEqual(orgs, want) {
+	if !cmp.Equal(orgs, want) {
 		t.Errorf("Organizations.List returned %+v, want %+v", orgs, want)
 	}
 
@@ -146,7 +153,7 @@ func TestOrganizationsService_List_specifiedUser(t *testing.T) {
 	}
 
 	want := []*Organization{{ID: Int64(1)}, {ID: Int64(2)}}
-	if !reflect.DeepEqual(orgs, want) {
+	if !cmp.Equal(orgs, want) {
 		t.Errorf("Organizations.List returned %+v, want %+v", orgs, want)
 	}
 
@@ -191,7 +198,7 @@ func TestOrganizationsService_Get(t *testing.T) {
 	}
 
 	want := &Organization{ID: Int64(1), Login: String("l"), URL: String("u"), AvatarURL: String("a"), Location: String("l")}
-	if !reflect.DeepEqual(org, want) {
+	if !cmp.Equal(org, want) {
 		t.Errorf("Organizations.Get returned %+v, want %+v", org, want)
 	}
 
@@ -235,7 +242,7 @@ func TestOrganizationsService_GetByID(t *testing.T) {
 	}
 
 	want := &Organization{ID: Int64(1), Login: String("l"), URL: String("u"), AvatarURL: String("a"), Location: String("l")}
-	if !reflect.DeepEqual(org, want) {
+	if !cmp.Equal(org, want) {
 		t.Errorf("Organizations.GetByID returned %+v, want %+v", org, want)
 	}
 
@@ -266,7 +273,7 @@ func TestOrganizationsService_Edit(t *testing.T) {
 
 		testHeader(t, r, "Accept", mediaTypeMemberAllowedRepoCreationTypePreview)
 		testMethod(t, r, "PATCH")
-		if !reflect.DeepEqual(v, input) {
+		if !cmp.Equal(v, input) {
 			t.Errorf("Request body = %+v, want %+v", v, input)
 		}
 
@@ -280,7 +287,7 @@ func TestOrganizationsService_Edit(t *testing.T) {
 	}
 
 	want := &Organization{ID: Int64(1)}
-	if !reflect.DeepEqual(org, want) {
+	if !cmp.Equal(org, want) {
 		t.Errorf("Organizations.Edit returned %+v, want %+v", org, want)
 	}
 
@@ -324,7 +331,7 @@ func TestOrganizationsService_ListInstallations(t *testing.T) {
 	}
 
 	want := &OrganizationInstallations{TotalCount: Int(1), Installations: []*Installation{{ID: Int64(1), AppID: Int64(5)}}}
-	if !reflect.DeepEqual(apps, want) {
+	if !cmp.Equal(apps, want) {
 		t.Errorf("Organizations.ListInstallations returned %+v, want %+v", apps, want)
 	}
 
@@ -370,7 +377,7 @@ func TestOrganizationsService_ListInstallations_withListOptions(t *testing.T) {
 	}
 
 	want := &OrganizationInstallations{TotalCount: Int(2), Installations: []*Installation{{ID: Int64(2), AppID: Int64(10)}}}
-	if !reflect.DeepEqual(apps, want) {
+	if !cmp.Equal(apps, want) {
 		t.Errorf("Organizations.ListInstallations returned %+v, want %+v", apps, want)
 	}
 
@@ -393,4 +400,46 @@ func TestOrganizationsService_ListInstallations_withListOptions(t *testing.T) {
 		}
 		return resp, err
 	})
+}
+
+func TestOrganizationInstallations_Marshal(t *testing.T) {
+	testJSONMarshal(t, &OrganizationInstallations{}, "{}")
+
+	o := &OrganizationInstallations{
+		TotalCount:    Int(1),
+		Installations: []*Installation{{ID: Int64(1)}},
+	}
+	want := `{
+		"total_count": 1,
+		"installations": [
+			{
+				"id": 1
+			}
+		]
+	}`
+
+	testJSONMarshal(t, o, want)
+}
+
+func TestPlan_Marshal(t *testing.T) {
+	testJSONMarshal(t, &Plan{}, "{}")
+
+	o := &Plan{
+		Name:          String("name"),
+		Space:         Int(1),
+		Collaborators: Int(1),
+		PrivateRepos:  Int(1),
+		FilledSeats:   Int(1),
+		Seats:         Int(1),
+	}
+	want := `{
+		"name": "name",
+		"space": 1,
+		"collaborators": 1,
+		"private_repos": 1,
+		"filled_seats": 1,
+		"seats": 1
+	}`
+
+	testJSONMarshal(t, o, want)
 }
